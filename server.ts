@@ -470,35 +470,30 @@ async function pollAndPushMessages() {
         // Non-critical, proceed without sender info
       }
 
-      // Try to push as channel notification — this is what makes it immediate
-      try {
-        await mcp.notification({
-          method: "notifications/claude/channel",
-          params: {
-            content: msg.text,
-            meta: {
-              from_id: msg.from_id,
-              from_summary: fromSummary,
-              from_cwd: fromCwd,
-              sent_at: msg.sent_at,
-            },
+      // Always buffer the message for check_messages retrieval
+      messageBuffer.push({
+        ...msg,
+        from_summary: fromSummary,
+        from_cwd: fromCwd,
+      });
+
+      // Also try channel notification for real-time push (may be silently ignored)
+      await mcp.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: msg.text,
+          meta: {
+            from_id: msg.from_id,
+            from_summary: fromSummary,
+            from_cwd: fromCwd,
+            sent_at: msg.sent_at,
           },
-        });
-        log(
-          `Pushed message from ${msg.from_id} via channel: ${msg.text.slice(0, 80)}`,
-        );
-      } catch {
-        // Channel not available (--dangerously-load-development-channels not set)
-        // Buffer the message for retrieval via check_messages tool
-        messageBuffer.push({
-          ...msg,
-          from_summary: fromSummary,
-          from_cwd: fromCwd,
-        });
-        log(
-          `Buffered message from ${msg.from_id} (channel unavailable): ${msg.text.slice(0, 80)}`,
-        );
-      }
+        },
+      });
+
+      log(
+        `Message from ${msg.from_id} buffered + channel pushed: ${msg.text.slice(0, 80)}`,
+      );
     }
   } catch (e) {
     // Broker might be down temporarily, don't crash
