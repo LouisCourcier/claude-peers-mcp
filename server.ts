@@ -57,7 +57,9 @@ async function brokerFetch<T>(path: string, body: unknown): Promise<T> {
 
 async function isBrokerAlive(): Promise<boolean> {
   try {
-    const res = await fetch(`${BROKER_URL}/health`, { signal: AbortSignal.timeout(2000) });
+    const res = await fetch(`${BROKER_URL}/health`, {
+      signal: AbortSignal.timeout(2000),
+    });
     return res.ok;
   } catch {
     return false;
@@ -139,6 +141,12 @@ let myId: PeerId | null = null;
 let myCwd = process.cwd();
 let myGitRoot: string | null = null;
 
+// Buffer for messages that couldn't be pushed via channel
+// (fallback when --dangerously-load-development-channels is not set)
+const messageBuffer: Array<
+  Message & { from_summary?: string; from_cwd?: string }
+> = [];
+
 // --- MCP Server ---
 
 const mcp = new Server(
@@ -161,7 +169,7 @@ Available tools:
 - check_messages: Manually check for new messages
 
 When you start, proactively call set_summary to describe what you're working on. This helps other instances understand your context.`,
-  }
+  },
 );
 
 // --- Tool definitions ---
@@ -193,7 +201,8 @@ const TOOLS = [
       properties: {
         to_id: {
           type: "string" as const,
-          description: "The peer ID of the target Claude Code instance (from list_peers)",
+          description:
+            "The peer ID of the target Claude Code instance (from list_peers)",
         },
         message: {
           type: "string" as const,
@@ -240,7 +249,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   switch (name) {
     case "list_peers": {
-      const scope = (args as { scope: string }).scope as "machine" | "directory" | "repo";
+      const scope = (args as { scope: string }).scope as
+        | "machine"
+        | "directory"
+        | "repo";
       try {
         const peers = await brokerFetch<Peer[]>("/list-peers", {
           scope,
@@ -261,11 +273,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
 
         const lines = peers.map((p) => {
-          const parts = [
-            `ID: ${p.id}`,
-            `PID: ${p.pid}`,
-            `CWD: ${p.cwd}`,
-          ];
+          const parts = [`ID: ${p.id}`, `PID: ${p.pid}`, `CWD: ${p.cwd}`];
           if (p.git_root) parts.push(`Repo: ${p.git_root}`);
           if (p.tty) parts.push(`TTY: ${p.tty}`);
           if (p.summary) parts.push(`Summary: ${p.summary}`);
@@ -298,24 +306,36 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const { to_id, message } = args as { to_id: string; message: string };
       if (!myId) {
         return {
-          content: [{ type: "text" as const, text: "Not registered with broker yet" }],
+          content: [
+            { type: "text" as const, text: "Not registered with broker yet" },
+          ],
           isError: true,
         };
       }
       try {
-        const result = await brokerFetch<{ ok: boolean; error?: string }>("/send-message", {
-          from_id: myId,
-          to_id,
-          text: message,
-        });
+        const result = await brokerFetch<{ ok: boolean; error?: string }>(
+          "/send-message",
+          {
+            from_id: myId,
+            to_id,
+            text: message,
+          },
+        );
         if (!result.ok) {
           return {
-            content: [{ type: "text" as const, text: `Failed to send: ${result.error}` }],
+            content: [
+              {
+                type: "text" as const,
+                text: `Failed to send: ${result.error}`,
+              },
+            ],
             isError: true,
           };
         }
         return {
-          content: [{ type: "text" as const, text: `Message sent to peer ${to_id}` }],
+          content: [
+            { type: "text" as const, text: `Message sent to peer ${to_id}` },
+          ],
         };
       } catch (e) {
         return {
@@ -334,14 +354,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const { summary } = args as { summary: string };
       if (!myId) {
         return {
-          content: [{ type: "text" as const, text: "Not registered with broker yet" }],
+          content: [
+            { type: "text" as const, text: "Not registered with broker yet" },
+          ],
           isError: true,
         };
       }
       try {
         await brokerFetch("/set-summary", { id: myId, summary });
         return {
-          content: [{ type: "text" as const, text: `Summary updated: "${summary}"` }],
+          content: [
+            { type: "text" as const, text: `Summary updated: "${summary}"` },
+          ],
         };
       } catch (e) {
         return {
@@ -359,25 +383,43 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     case "check_messages": {
       if (!myId) {
         return {
-          content: [{ type: "text" as const, text: "Not registered with broker yet" }],
+          content: [
+            { type: "text" as const, text: "Not registered with broker yet" },
+          ],
           isError: true,
         };
       }
       try {
-        const result = await brokerFetch<PollMessagesResponse>("/poll-messages", { id: myId });
-        if (result.messages.length === 0) {
+        // First check the local buffer (messages consumed by poll loop but not delivered via channel)
+        // Then also check the broker for any new messages
+        const result = await brokerFetch<PollMessagesResponse>(
+          "/poll-messages",
+          { id: myId },
+        );
+
+        // Add any new broker messages to the buffer too
+        for (const m of result.messages) {
+          messageBuffer.push(m);
+        }
+
+        if (messageBuffer.length === 0) {
           return {
             content: [{ type: "text" as const, text: "No new messages." }],
           };
         }
-        const lines = result.messages.map(
-          (m) => `From ${m.from_id} (${m.sent_at}):\n${m.text}`
-        );
+
+        // Drain the buffer
+        const buffered = messageBuffer.splice(0, messageBuffer.length);
+        const lines = buffered.map((m) => {
+          const meta = m.from_summary ? ` [${m.from_summary}]` : "";
+          const cwd = (m as any).from_cwd ? ` (${(m as any).from_cwd})` : "";
+          return `From ${m.from_id}${meta}${cwd} (${m.sent_at}):\n${m.text}`;
+        });
         return {
           content: [
             {
               type: "text" as const,
-              text: `${result.messages.length} new message(s):\n\n${lines.join("\n\n---\n\n")}`,
+              text: `${buffered.length} new message(s):\n\n${lines.join("\n\n---\n\n")}`,
             },
           ],
         };
@@ -405,7 +447,9 @@ async function pollAndPushMessages() {
   if (!myId) return;
 
   try {
-    const result = await brokerFetch<PollMessagesResponse>("/poll-messages", { id: myId });
+    const result = await brokerFetch<PollMessagesResponse>("/poll-messages", {
+      id: myId,
+    });
 
     for (const msg of result.messages) {
       // Look up the sender's info for context
@@ -426,21 +470,35 @@ async function pollAndPushMessages() {
         // Non-critical, proceed without sender info
       }
 
-      // Push as channel notification — this is what makes it immediate
-      await mcp.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: msg.text,
-          meta: {
-            from_id: msg.from_id,
-            from_summary: fromSummary,
-            from_cwd: fromCwd,
-            sent_at: msg.sent_at,
+      // Try to push as channel notification — this is what makes it immediate
+      try {
+        await mcp.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content: msg.text,
+            meta: {
+              from_id: msg.from_id,
+              from_summary: fromSummary,
+              from_cwd: fromCwd,
+              sent_at: msg.sent_at,
+            },
           },
-        },
-      });
-
-      log(`Pushed message from ${msg.from_id}: ${msg.text.slice(0, 80)}`);
+        });
+        log(
+          `Pushed message from ${msg.from_id} via channel: ${msg.text.slice(0, 80)}`,
+        );
+      } catch {
+        // Channel not available (--dangerously-load-development-channels not set)
+        // Buffer the message for retrieval via check_messages tool
+        messageBuffer.push({
+          ...msg,
+          from_summary: fromSummary,
+          from_cwd: fromCwd,
+        });
+        log(
+          `Buffered message from ${msg.from_id} (channel unavailable): ${msg.text.slice(0, 80)}`,
+        );
+      }
     }
   } catch (e) {
     // Broker might be down temporarily, don't crash
@@ -480,7 +538,9 @@ async function main() {
         log(`Auto-summary: ${summary}`);
       }
     } catch (e) {
-      log(`Auto-summary failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+      log(
+        `Auto-summary failed (non-critical): ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   })();
 
@@ -503,7 +563,10 @@ async function main() {
     summaryPromise.then(async () => {
       if (initialSummary && myId) {
         try {
-          await brokerFetch("/set-summary", { id: myId, summary: initialSummary });
+          await brokerFetch("/set-summary", {
+            id: myId,
+            summary: initialSummary,
+          });
           log(`Late auto-summary applied: ${initialSummary}`);
         } catch {
           // Non-critical
