@@ -27,6 +27,7 @@ export interface Message {
   delivered: boolean;
   from_name?: string | null;
   from_cwd?: string | null;
+  delivered_at?: string | null;
 }
 
 // --- Broker API types ---

@@ -125,6 +125,19 @@ test("check_messages fallback returns sender name", async () => {
   expect(text).toContain("skill-owner");
 });
 
+test("send_message returns the message id and message_status reports delivery", async () => {
+  const send = await clientA.callTool({
+    name: "send_message",
+    arguments: { to: "skill-owner", message: "receipt round-trip" },
+  });
+  const text = (send.content as { text: string }[])[0].text;
+  const id = Number(/id (\d+)/.exec(text)?.[1]);
+  expect(id).toBeGreaterThan(0);
+  await new Promise((r) => setTimeout(r, 1500)); // let B's poll loop fetch it
+  const st = await clientA.callTool({ name: "message_status", arguments: { id } });
+  expect((st.content as { text: string }[])[0].text).toContain("delivered");
+});
+
 test("list_peers renders the recent-activity digest", async () => {
   await fetch(`http://127.0.0.1:${PORT}/update-activity`, {
     method: "POST",

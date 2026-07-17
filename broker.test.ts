@@ -206,6 +206,29 @@ describe("broker messaging", () => {
     expect(r.ok).toBe(false);
     expect(r.error).toContain("receiver-b");
   });
+
+  test("delivery receipt: buffered until polled, delivered after", async () => {
+    const peers = await post<any[]>("/list-peers", { scope: "machine", cwd: "/", git_root: null });
+    const a = peers.find((p) => p.name === "sender-a");
+    const b = peers.find((p) => p.name === "receiver-b");
+    const s = await post<{ ok: boolean; id: number }>("/send-message", {
+      from_id: a.id, to: "receiver-b", text: "receipt test",
+    });
+    expect(s.ok).toBe(true);
+    expect(s.id).toBeGreaterThan(0);
+    let st = await post<{ ok: boolean; status: string }>("/message-status", { id: s.id });
+    expect(st.status).toBe("buffered");
+    await post("/poll-messages", { id: b.id });
+    st = await post<{ ok: boolean; status: string; delivered_at: string }>("/message-status", { id: s.id });
+    expect(st.status).toBe("delivered");
+    expect((st as any).delivered_at).toBeTruthy();
+  });
+
+  test("message-status on an unknown id is an explicit error", async () => {
+    const r = await post<{ ok: boolean; error?: string }>("/message-status", { id: 999999 });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("not found");
+  });
 });
 
 describe("living directory", () => {

@@ -109,6 +109,7 @@ ensureColumn("peers", "last_activity", "TEXT");
 ensureColumn("peers", "activity_at", "TEXT");
 ensureColumn("messages", "from_name", "TEXT");
 ensureColumn("messages", "from_cwd", "TEXT");
+ensureColumn("messages", "delivered_at", "TEXT");
 db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_peers_name ON peers(name)");
 
 // Backfill names for rows registered by v1 servers before this migration ran
@@ -167,7 +168,7 @@ const selectUndelivered = db.prepare(`
 `);
 
 const markDelivered = db.prepare(`
-  UPDATE messages SET delivered = 1 WHERE id = ?
+  UPDATE messages SET delivered = 1, delivered_at = ? WHERE id = ?
 `);
 
 const selectActivity = db.prepare(`
@@ -321,7 +322,7 @@ function handleListPeers(body: ListPeersRequest): Peer[] {
   }));
 }
 
-function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: string } {
+function handleSendMessage(body: SendMessageRequest): { ok: boolean; id?: number; error?: string } {
   const target = body.to ?? body.to_id;
   if (!target) return { ok: false, error: "Missing 'to' (peer name or ID)" };
 
@@ -352,19 +353,33 @@ function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: str
       error: `Rate limit: ${n} messages in the last hour between "${sender?.name ?? body.from_id}" and "${target}" — runaway guard. Stop this exchange for now; if it is intentional, the user can raise CLAUDE_PEERS_PAIR_LIMIT and restart the broker.`,
     };
   }
-  db.run(
+  const res = db.run(
     "INSERT INTO messages (from_id, to_id, text, sent_at, delivered, from_name, from_cwd) VALUES (?, ?, ?, ?, 0, ?, ?)",
     [body.from_id, resolved.id, body.text, new Date().toISOString(), sender?.name ?? null, sender?.cwd ?? null],
   );
-  return { ok: true };
+  return { ok: true, id: Number(res.lastInsertRowid) };
+}
+
+function handleMessageStatus(body: { id: number }): {
+  ok: boolean;
+  status?: "buffered" | "delivered";
+  delivered_at?: string | null;
+  error?: string;
+} {
+  const row = db.query("SELECT delivered, delivered_at FROM messages WHERE id = ?").get(body.id) as
+    | { delivered: number; delivered_at: string | null }
+    | null;
+  if (!row) return { ok: false, error: `Message ${body.id} not found` };
+  return { ok: true, status: row.delivered ? "delivered" : "buffered", delivered_at: row.delivered_at };
 }
 
 function handlePollMessages(body: PollMessagesRequest): PollMessagesResponse {
   const messages = selectUndelivered.all(body.id) as Message[];
 
   // Mark them as delivered
+  const now = new Date().toISOString();
   for (const msg of messages) {
-    markDelivered.run(msg.id);
+    markDelivered.run(now, msg.id);
   }
 
   return { messages };
@@ -406,6 +421,8 @@ Bun.serve({
           return Response.json(handleListPeers(body as ListPeersRequest));
         case "/send-message":
           return Response.json(handleSendMessage(body as SendMessageRequest));
+        case "/message-status":
+          return Response.json(handleMessageStatus(body as { id: number }));
         case "/update-activity":
           handleUpdateActivity(body as { claude_pid: number; prompt_head: string; branch: string | null });
           return Response.json({ ok: true });

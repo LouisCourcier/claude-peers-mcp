@@ -212,6 +212,18 @@ const TOOLS = [
     },
   },
   {
+    name: "message_status",
+    description:
+      "Check whether a sent message reached the target session. 'delivered' means handed to the peer's server (channel push emitted); proof of processing is still their reply.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        id: { type: "number" as const, description: "Message id returned by send_message" },
+      },
+      required: ["id"],
+    },
+  },
+  {
     name: "set_name",
     description:
       "Rename this session's peer identity (slugified; suffixed if taken). Use when the user gives this session a clearer identity.",
@@ -324,7 +336,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
       }
       try {
-        const result = await brokerFetch<{ ok: boolean; error?: string }>("/send-message", {
+        const result = await brokerFetch<{ ok: boolean; id?: number; error?: string }>("/send-message", {
           from_id: myId,
           to,
           text: message,
@@ -332,10 +344,30 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (!result.ok) {
           return { content: [{ type: "text" as const, text: `Failed to send: ${result.error}` }], isError: true };
         }
-        return { content: [{ type: "text" as const, text: `Message sent to ${to}` }] };
+        return { content: [{ type: "text" as const, text: `Message sent to ${to} (id ${result.id})` }] };
       } catch (e) {
         return {
           content: [{ type: "text" as const, text: `Error sending message: ${e instanceof Error ? e.message : String(e)}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case "message_status": {
+      const { id } = args as { id: number };
+      try {
+        const r = await brokerFetch<{ ok: boolean; status?: string; delivered_at?: string | null; error?: string }>(
+          "/message-status",
+          { id },
+        );
+        if (!r.ok) {
+          return { content: [{ type: "text" as const, text: `Status check failed: ${r.error}` }], isError: true };
+        }
+        const when = r.delivered_at ? ` at ${r.delivered_at}` : "";
+        return { content: [{ type: "text" as const, text: `Message ${id}: ${r.status}${when}` }] };
+      } catch (e) {
+        return {
+          content: [{ type: "text" as const, text: `Error checking status: ${e instanceof Error ? e.message : String(e)}` }],
           isError: true,
         };
       }
