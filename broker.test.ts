@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deriveNameFromPrompt, slugify } from "./shared/naming.ts";
+import { slugify } from "./shared/naming.ts";
 
 const PORT = 17899;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -50,14 +50,6 @@ describe("naming", () => {
     expect(s.length).toBeLessThanOrEqual(40);
     expect(s.endsWith("-")).toBe(false);
   });
-  test("deriveNameFromPrompt keeps 4 significant tokens", () => {
-    expect(deriveNameFromPrompt("reprend le full scope urgewald stp")).toBe(
-      "reprend-full-scope-urgewald",
-    );
-  });
-  test("deriveNameFromPrompt returns null on weak prompts", () => {
-    expect(deriveNameFromPrompt("tout est bon ?")).toBeNull();
-  });
 });
 
 describe("broker identity", () => {
@@ -93,25 +85,16 @@ describe("broker identity", () => {
     expect(r.name).toBe("legacy");
   });
 
-  test("update-activity refreshes activity and upgrades a fallback name once", async () => {
+  test("update-activity refreshes activity but never renames", async () => {
     await post("/update-activity", {
       claude_pid: 222,
       prompt_head: "analyse complete du provider bloomberg datasets bnpp",
       branch: "feat/tagging-v2",
     });
-    let peers = await post<any[]>("/list-peers", { scope: "machine", cwd: "/", git_root: null });
-    let p = peers.find((x) => x.claude_pid === 222);
-    expect(p.name).toBe("analyse-complete-provider-bloomberg");
+    const peers = await post<any[]>("/list-peers", { scope: "machine", cwd: "/", git_root: null });
+    const p = peers.find((x) => x.claude_pid === 222);
+    expect(p.name).toBe("repo-feat-tagging-v2");
     expect(p.last_activity).toBe("analyse complete du provider bloomberg datasets bnpp");
-    // second update must NOT rename (frozen), only refresh activity
-    await post("/update-activity", {
-      claude_pid: 222, prompt_head: "maintenant corrige le connecteur trucost edx stp", branch: "main",
-    });
-    peers = await post<any[]>("/list-peers", { scope: "machine", cwd: "/", git_root: null });
-    p = peers.find((x) => x.claude_pid === 222);
-    expect(p.name).toBe("analyse-complete-provider-bloomberg");
-    expect(p.branch).toBe("main");
-    expect(p.last_activity).toContain("corrige le connecteur");
   });
 
   test("update-activity for unknown claude_pid is a 200 no-op", async () => {
@@ -219,5 +202,44 @@ describe("broker messaging", () => {
     });
     expect(r.ok).toBe(false);
     expect(r.error).toContain("receiver-b");
+  });
+});
+
+describe("living directory", () => {
+  test("ring buffer keeps the 5 most recent substantive prompts, newest first", async () => {
+    await post("/register", {
+      pid: process.pid, cwd: "/tmp/ring", git_root: null, tty: null,
+      summary: "", claude_pid: 1010, branch: "main",
+    });
+    for (let i = 1; i <= 7; i++) {
+      await post("/update-activity", {
+        claude_pid: 1010, prompt_head: `substantive prompt number ${i} padding`, branch: "main",
+      });
+    }
+    await post("/update-activity", { claude_pid: 1010, prompt_head: "go", branch: "main" });
+    const peers = await post<any[]>("/list-peers", { scope: "machine", cwd: "/", git_root: null });
+    const p = peers.find((x) => x.claude_pid === 1010);
+    expect(p.recent_activity).toHaveLength(5);
+    expect(p.recent_activity[0].prompt_head).toContain("number 7");
+    expect(p.recent_activity[4].prompt_head).toContain("number 3");
+    expect(p.last_activity).toBe("go");
+  });
+
+  test("unregister clears the peer's activity rows", async () => {
+    const first = await post<{ id: string }>("/register", {
+      pid: process.pid, cwd: "/tmp/wipe", git_root: null, tty: null,
+      summary: "", claude_pid: 2020, branch: null,
+    });
+    await post("/update-activity", {
+      claude_pid: 2020, prompt_head: "some substantive activity here", branch: null,
+    });
+    await post("/unregister", { id: first.id });
+    await post("/register", {
+      pid: process.pid, cwd: "/tmp/wipe", git_root: null, tty: null,
+      summary: "", claude_pid: 2020, branch: null,
+    });
+    const peers = await post<any[]>("/list-peers", { scope: "machine", cwd: "/", git_root: null });
+    const p = peers.find((x) => x.claude_pid === 2020);
+    expect(p.recent_activity).toHaveLength(0);
   });
 });

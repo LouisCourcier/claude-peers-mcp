@@ -22,10 +22,12 @@ import type {
   Peer,
   Message,
 } from "./shared/types.ts";
-import { deriveNameFromPrompt, slugify } from "./shared/naming.ts";
+import { slugify } from "./shared/naming.ts";
 
 const PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
 const DB_PATH = process.env.CLAUDE_PEERS_DB ?? `${process.env.HOME}/.claude-peers.db`;
+const ACTIVITY_RING_SIZE = 5;
+const ACTIVITY_MIN_PROMPT_LEN = 15;
 
 // --- Database setup ---
 
@@ -56,6 +58,16 @@ db.run(`
     delivered INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (from_id) REFERENCES peers(id),
     FOREIGN KEY (to_id) REFERENCES peers(id)
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS peer_activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    peer_id TEXT NOT NULL,
+    prompt_head TEXT NOT NULL,
+    branch TEXT,
+    at TEXT NOT NULL
   )
 `);
 
@@ -111,7 +123,7 @@ function cleanStalePeers() {
       process.kill(peer.pid, 0);
     } catch {
       // Process doesn't exist, remove it
-      db.run("DELETE FROM peers WHERE id = ?", [peer.id]);
+      removePeer(peer.id);
       db.run("DELETE FROM messages WHERE to_id = ? AND delivered = 0", [peer.id]);
     }
   }
@@ -156,6 +168,15 @@ const markDelivered = db.prepare(`
   UPDATE messages SET delivered = 1 WHERE id = ?
 `);
 
+const selectActivity = db.prepare(`
+  SELECT prompt_head, at FROM peer_activity WHERE peer_id = ? ORDER BY id DESC LIMIT ${ACTIVITY_RING_SIZE}
+`);
+
+function removePeer(id: string): void {
+  deletePeer.run(id);
+  db.run("DELETE FROM peer_activity WHERE peer_id = ?", [id]);
+}
+
 // --- Generate peer ID ---
 
 function generateId(): string {
@@ -183,7 +204,7 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
       : (db.query("SELECT id, name, name_source, name_is_fallback FROM peers WHERE pid = ? AND claude_pid IS NULL").get(body.pid) as
           { id: string; name: string; name_source: string; name_is_fallback: number } | null);
   if (existing) {
-    deletePeer.run(existing.id);
+    removePeer(existing.id);
   }
 
   const envName = body.name ? slugify(body.name) : "";
@@ -216,19 +237,25 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
 
 function handleUpdateActivity(body: { claude_pid: number; prompt_head: string; branch: string | null }): void {
   const peer = db
-    .query("SELECT id, name_is_fallback FROM peers WHERE claude_pid = ? ORDER BY registered_at DESC")
-    .get(body.claude_pid) as { id: string; name_is_fallback: number } | null;
+    .query("SELECT id FROM peers WHERE claude_pid = ? ORDER BY registered_at DESC")
+    .get(body.claude_pid) as { id: string } | null;
   if (!peer) return; // no-op: unknown or flagless-era session
   const now = new Date().toISOString();
   db.run(
     "UPDATE peers SET last_activity = ?, activity_at = ?, branch = COALESCE(?, branch), last_seen = ? WHERE id = ?",
     [body.prompt_head, now, body.branch, now, peer.id],
   );
-  if (peer.name_is_fallback === 1) {
-    const derived = deriveNameFromPrompt(body.prompt_head);
-    if (derived) {
-      db.run("UPDATE peers SET name = ?, name_is_fallback = 0 WHERE id = ?", [uniquifyName(derived, peer.id), peer.id]);
-    }
+  const head = body.prompt_head.trim();
+  if (head.length >= ACTIVITY_MIN_PROMPT_LEN) {
+    db.run(
+      "INSERT INTO peer_activity (peer_id, prompt_head, branch, at) VALUES (?, ?, ?, ?)",
+      [peer.id, head, body.branch, now],
+    );
+    db.run(
+      `DELETE FROM peer_activity WHERE peer_id = ? AND id NOT IN (
+         SELECT id FROM peer_activity WHERE peer_id = ? ORDER BY id DESC LIMIT ${ACTIVITY_RING_SIZE})`,
+      [peer.id, peer.id],
+    );
   }
 }
 
@@ -276,16 +303,20 @@ function handleListPeers(body: ListPeersRequest): Peer[] {
   }
 
   // Verify each peer's process is still alive
-  return peers.filter((p) => {
+  const alive = peers.filter((p) => {
     try {
       process.kill(p.pid, 0);
       return true;
     } catch {
       // Clean up dead peer
-      deletePeer.run(p.id);
+      removePeer(p.id);
       return false;
     }
   });
+  return alive.map((p) => ({
+    ...p,
+    recent_activity: selectActivity.all(p.id) as { prompt_head: string; at: string }[],
+  }));
 }
 
 function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: string } {
@@ -324,7 +355,7 @@ function handlePollMessages(body: PollMessagesRequest): PollMessagesResponse {
 }
 
 function handleUnregister(body: { id: string }): void {
-  deletePeer.run(body.id);
+  removePeer(body.id);
 }
 
 // --- HTTP Server ---

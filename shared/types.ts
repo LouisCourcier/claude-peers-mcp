@@ -15,6 +15,7 @@ export interface Peer {
   last_activity?: string | null;
   activity_at?: string | null;
   claude_pid?: number | null;
+  recent_activity?: { prompt_head: string; at: string }[];
 }
 
 export interface Message {
