@@ -65,10 +65,11 @@ function fallbackName(cwd: string, branch: string | null): string {
   return b ? `${base}-${b}`.slice(0, 40).replace(/-+$/g, "") : base;
 }
 
-function uniquifyName(base: string): string {
-  const taken = new Set(
-    (db.query("SELECT name FROM peers WHERE name IS NOT NULL").all() as { name: string }[]).map((r) => r.name),
-  );
+function uniquifyName(base: string, excludeId?: string): string {
+  const rows = excludeId
+    ? (db.query("SELECT name FROM peers WHERE name IS NOT NULL AND id != ?").all(excludeId) as { name: string }[])
+    : (db.query("SELECT name FROM peers WHERE name IS NOT NULL").all() as { name: string }[]);
+  const taken = new Set(rows.map((r) => r.name));
   if (!taken.has(base)) return base;
   for (let i = 2; ; i++) {
     const candidate = `${base}-${i}`;
@@ -177,18 +178,31 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
   // wrapper script); fall back to `pid` alone for legacy v1 callers with no claude_pid.
   const existing =
     body.claude_pid != null
-      ? (db.query("SELECT id FROM peers WHERE claude_pid = ?").get(body.claude_pid) as { id: string } | null)
-      : (db.query("SELECT id FROM peers WHERE pid = ? AND claude_pid IS NULL").get(body.pid) as
-          | { id: string }
-          | null);
+      ? (db.query("SELECT id, name, name_source, name_is_fallback FROM peers WHERE claude_pid = ?").get(body.claude_pid) as
+          { id: string; name: string; name_source: string; name_is_fallback: number } | null)
+      : (db.query("SELECT id, name, name_source, name_is_fallback FROM peers WHERE pid = ? AND claude_pid IS NULL").get(body.pid) as
+          { id: string; name: string; name_source: string; name_is_fallback: number } | null);
   if (existing) {
     deletePeer.run(existing.id);
   }
 
   const envName = body.name ? slugify(body.name) : "";
-  const name = uniquifyName(envName || fallbackName(body.cwd, body.branch ?? null));
-  const nameSource = envName ? "env" : "auto";
-  const nameIsFallback = envName ? 0 : 1;
+  let name: string;
+  let nameSource: string;
+  let nameIsFallback: number;
+  if (envName) {
+    name = uniquifyName(envName);
+    nameSource = "env";
+    nameIsFallback = 0;
+  } else if (existing && existing.name && existing.name_is_fallback === 0) {
+    name = uniquifyName(existing.name);
+    nameSource = existing.name_source;
+    nameIsFallback = 0;
+  } else {
+    name = uniquifyName(fallbackName(body.cwd, body.branch ?? null));
+    nameSource = "auto";
+    nameIsFallback = 1;
+  }
 
   db.run(
     `INSERT INTO peers (id, pid, cwd, git_root, tty, summary, registered_at, last_seen,
@@ -213,7 +227,7 @@ function handleUpdateActivity(body: { claude_pid: number; prompt_head: string; b
   if (peer.name_is_fallback === 1) {
     const derived = deriveNameFromPrompt(body.prompt_head);
     if (derived) {
-      db.run("UPDATE peers SET name = ?, name_is_fallback = 0 WHERE id = ?", [uniquifyName(derived), peer.id]);
+      db.run("UPDATE peers SET name = ?, name_is_fallback = 0 WHERE id = ?", [uniquifyName(derived, peer.id), peer.id]);
     }
   }
 }
@@ -221,7 +235,7 @@ function handleUpdateActivity(body: { claude_pid: number; prompt_head: string; b
 function handleSetName(body: { id: string; name: string }): { ok: boolean; name?: string; error?: string } {
   const peer = db.query("SELECT id FROM peers WHERE id = ?").get(body.id) as { id: string } | null;
   if (!peer) return { ok: false, error: `Peer ${body.id} not found` };
-  const name = uniquifyName(slugify(body.name) || "peer");
+  const name = uniquifyName(slugify(body.name) || "peer", body.id);
   db.run("UPDATE peers SET name = ?, name_source = 'manual', name_is_fallback = 0 WHERE id = ?", [name, body.id]);
   return { ok: true, name };
 }

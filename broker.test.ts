@@ -133,6 +133,48 @@ describe("broker identity", () => {
     });
     expect(r.name).toBe("skill-dataset-analysis-3");
   });
+
+  test("set-name to a peer's own current slug is a no-op (no self-collision)", async () => {
+    const reg = await post<{ id: string; name: string }>("/register", {
+      pid: process.pid, cwd: "/tmp/self", git_root: null, tty: null,
+      summary: "", name: "self-slug", claude_pid: 777, branch: null,
+    });
+    expect(reg.name).toBe("self-slug");
+    const r = await post<{ ok: boolean; name: string }>("/set-name", {
+      id: reg.id, name: "self-slug",
+    });
+    expect(r.name).toBe("self-slug");
+  });
+
+  test("register preserves a peer's non-fallback name across re-registration (server restart)", async () => {
+    const first = await post<{ id: string; name: string }>("/register", {
+      pid: process.pid, cwd: "/tmp/restart", git_root: null, tty: null,
+      summary: "", claude_pid: 888, branch: "main",
+    });
+    await post("/set-name", { id: first.id, name: "kept-name" });
+    const second = await post<{ id: string; name: string }>("/register", {
+      pid: process.pid, cwd: "/tmp/restart", git_root: null, tty: null,
+      summary: "", claude_pid: 888, branch: "main",
+    });
+    expect(second.name).toBe("kept-name");
+    const peers = await post<any[]>("/list-peers", { scope: "machine", cwd: "/", git_root: null });
+    const p = peers.find((x) => x.claude_pid === 888);
+    expect(p.name).toBe("kept-name");
+    expect(p.name_is_fallback).toBe(0);
+  });
+
+  test("register with a fallback name re-registering on a changed branch still updates the fallback name", async () => {
+    const first = await post<{ id: string; name: string }>("/register", {
+      pid: process.pid, cwd: "/tmp/branchy", git_root: null, tty: null,
+      summary: "", claude_pid: 999, branch: "feat/one",
+    });
+    expect(first.name).toBe("branchy-feat-one");
+    const second = await post<{ id: string; name: string }>("/register", {
+      pid: process.pid, cwd: "/tmp/branchy", git_root: null, tty: null,
+      summary: "", claude_pid: 999, branch: "feat/two",
+    });
+    expect(second.name).toBe("branchy-feat-two");
+  });
 });
 
 describe("broker messaging", () => {
