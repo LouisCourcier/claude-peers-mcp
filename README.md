@@ -53,20 +53,21 @@ In another terminal, start Claude Code the same way. Then ask either one:
 
 > List all peers on this machine
 
-It'll show every running instance with their working directory, git repo, and a summary of what they're doing. Then:
+It'll show every running instance with its **name**, working directory, git branch, and last activity. Then:
 
-> Send a message to peer [id]: "what are you working on?"
+> Send a message to peer skill-dataset-analysis: "what are you working on?"
 
 The other Claude receives it immediately and responds.
 
 ## What Claude can do
 
-| Tool             | What it does                                                                   |
-| ---------------- | ------------------------------------------------------------------------------ |
-| `list_peers`     | Find other Claude Code instances — scoped to `machine`, `directory`, or `repo` |
-| `send_message`   | Send a message to another instance by ID (arrives instantly via channel push)  |
-| `set_summary`    | Describe what you're working on (visible to other peers)                       |
-| `check_messages` | Manually check for messages (fallback if not using channel mode)               |
+| Tool             | What it does                                                                       |
+| ---------------- | --------------------------------------------------------------------------------- |
+| `list_peers`     | Find other Claude Code instances — scoped to `machine`, `directory`, or `repo`     |
+| `send_message`   | Send a message to another instance by **name** (or ID) — arrives via channel push |
+| `set_name`       | Give this session a clearer peer name (slugified; suffixed if taken)              |
+| `set_summary`    | Declare your mission to other peers (optional, distinct from observed activity)    |
+| `check_messages` | Fallback: fetch messages when running without the channel flag                     |
 
 ## How it works
 
@@ -86,11 +87,16 @@ A **broker daemon** runs on `localhost:7899` with a SQLite database. Each Claude
 
 The broker auto-launches when the first session starts. It cleans up dead peers automatically. Everything is localhost-only.
 
-## Auto-summary
+## Peer identity
 
-If you set `OPENAI_API_KEY` in your environment, each instance generates a brief summary on startup using `gpt-5.4-nano` (costs fractions of a cent). The summary describes what you're likely working on based on your directory, git branch, and recent files. Other instances see this when they call `list_peers`.
+Every session has a readable **name** — the address other peers use in `send_message`. The name is resolved in this order:
 
-Without the API key, Claude sets its own summary via the `set_summary` tool.
+1. **Env override** — `CLAUDE_PEERS_NAME=my-name claude ...` (wins over everything).
+2. **`set_name` tool** — ask a session to rename itself; the name then sticks across MCP-server restarts.
+3. **Auto from activity** — a `UserPromptSubmit` hook feeds each prompt's head + git branch to the broker. The first substantive prompt derives a name (stopwords stripped, first significant tokens), then the name freezes while `last_activity` keeps refreshing.
+4. **Fallback** — `<cwd-basename>-<branch>` until the first prompt arrives.
+
+The activity hook lives in the harness that runs the sessions (e.g. `.claude/hooks/peers_activity.py`), POSTing `{claude_pid, prompt_head, branch}` to the broker's `/update-activity` endpoint. It is fail-open and silent — no broker, no git, no problem.
 
 ## CLI
 
@@ -107,11 +113,11 @@ bun cli.ts kill-broker       # stop the broker
 
 ## Configuration
 
-| Environment variable | Default              | Description                           |
-| -------------------- | -------------------- | ------------------------------------- |
-| `CLAUDE_PEERS_PORT`  | `7899`               | Broker port                           |
-| `CLAUDE_PEERS_DB`    | `~/.claude-peers.db` | SQLite database path                  |
-| `OPENAI_API_KEY`     | —                    | Enables auto-summary via gpt-5.4-nano |
+| Environment variable | Default              | Description                                          |
+| -------------------- | -------------------- | --------------------------------------------------- |
+| `CLAUDE_PEERS_PORT`  | `7899`               | Broker port                                         |
+| `CLAUDE_PEERS_DB`    | `~/.claude-peers.db` | SQLite database path                                |
+| `CLAUDE_PEERS_NAME`  | —                    | Explicit peer name for this session (overrides all) |
 
 ## Requirements
 
