@@ -28,7 +28,13 @@ const PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
 const DB_PATH = process.env.CLAUDE_PEERS_DB ?? `${process.env.HOME}/.claude-peers.db`;
 const ACTIVITY_RING_SIZE = 5;
 const ACTIVITY_MIN_PROMPT_LEN = 15;
-const PAIR_LIMIT = parseInt(process.env.CLAUDE_PEERS_PAIR_LIMIT ?? "20", 10);
+const _rawPairLimit = parseInt(process.env.CLAUDE_PEERS_PAIR_LIMIT ?? "20", 10);
+const PAIR_LIMIT = Number.isFinite(_rawPairLimit) && _rawPairLimit > 0 ? _rawPairLimit : 20;
+if (process.env.CLAUDE_PEERS_PAIR_LIMIT && PAIR_LIMIT !== _rawPairLimit) {
+  console.error(
+    `[claude-peers broker] invalid CLAUDE_PEERS_PAIR_LIMIT=${process.env.CLAUDE_PEERS_PAIR_LIMIT}; using default 20`,
+  );
+}
 const PAIR_WINDOW_MS = 3600_000;
 
 // --- Database setup ---
@@ -133,11 +139,6 @@ function cleanStalePeers() {
   }
 }
 
-cleanStalePeers();
-
-// Periodically clean stale peers (every 30s)
-setInterval(cleanStalePeers, 30_000);
-
 // --- Prepared statements ---
 
 const updateLastSeen = db.prepare(`
@@ -180,6 +181,11 @@ function removePeer(id: string): void {
   deletePeer.run(id);
   db.run("DELETE FROM peer_activity WHERE peer_id = ?", [id]);
 }
+
+cleanStalePeers();
+
+// Periodically clean stale peers (every 30s)
+setInterval(cleanStalePeers, 30_000);
 
 // --- Generate peer ID ---
 
