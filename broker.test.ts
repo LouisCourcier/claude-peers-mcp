@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import { slugify } from "./shared/naming.ts";
 const PORT = 17899;
 const BASE = `http://127.0.0.1:${PORT}`;
 let brokerProc: ReturnType<typeof Bun.spawn>;
+let dbPath: string;
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -19,11 +21,12 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 
 beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), "peers-test-"));
+  dbPath = join(dir, "test.db");
   brokerProc = Bun.spawn(["bun", "broker.ts"], {
     env: {
       ...process.env,
       CLAUDE_PEERS_PORT: String(PORT),
-      CLAUDE_PEERS_DB: join(dir, "test.db"),
+      CLAUDE_PEERS_DB: dbPath,
     },
     stdio: ["ignore", "ignore", "ignore"],
   });
@@ -233,13 +236,14 @@ describe("living directory", () => {
     await post("/update-activity", {
       claude_pid: 2020, prompt_head: "some substantive activity here", branch: null,
     });
+
+    const db = new Database(dbPath, { readonly: true });
+    const countForPeer = () =>
+      (db.query("SELECT COUNT(*) AS n FROM peer_activity WHERE peer_id = ?").get(first.id) as { n: number }).n;
+    expect(countForPeer()).toBe(1);
+
     await post("/unregister", { id: first.id });
-    await post("/register", {
-      pid: process.pid, cwd: "/tmp/wipe", git_root: null, tty: null,
-      summary: "", claude_pid: 2020, branch: null,
-    });
-    const peers = await post<any[]>("/list-peers", { scope: "machine", cwd: "/", git_root: null });
-    const p = peers.find((x) => x.claude_pid === 2020);
-    expect(p.recent_activity).toHaveLength(0);
+    expect(countForPeer()).toBe(0);
+    db.close();
   });
 });
