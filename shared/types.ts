@@ -10,6 +10,11 @@ export interface Peer {
   summary: string;
   registered_at: string; // ISO timestamp
   last_seen: string; // ISO timestamp
+  name?: string | null;
+  branch?: string | null;
+  last_activity?: string | null;
+  activity_at?: string | null;
+  claude_pid?: number | null;
 }
 
 export interface Message {
@@ -19,6 +24,8 @@ export interface Message {
   text: string;
   sent_at: string; // ISO timestamp
   delivered: boolean;
+  from_name?: string | null;
+  from_cwd?: string | null;
 }
 
 // --- Broker API types ---
@@ -29,10 +36,14 @@ export interface RegisterRequest {
   git_root: string | null;
   tty: string | null;
   summary: string;
+  name?: string | null;
+  claude_pid?: number | null;
+  branch?: string | null;
 }
 
 export interface RegisterResponse {
   id: PeerId;
+  name: string;
 }
 
 export interface HeartbeatRequest {
@@ -54,7 +65,8 @@ export interface ListPeersRequest {
 
 export interface SendMessageRequest {
   from_id: PeerId;
-  to_id: PeerId;
+  to?: string;
+  to_id?: string;
   text: string;
 }
 
