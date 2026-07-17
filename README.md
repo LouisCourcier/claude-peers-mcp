@@ -61,13 +61,14 @@ The other Claude receives it immediately and responds.
 
 ## What Claude can do
 
-| Tool             | What it does                                                                       |
-| ---------------- | --------------------------------------------------------------------------------- |
-| `list_peers`     | Find other Claude Code instances — scoped to `machine`, `directory`, or `repo`     |
-| `send_message`   | Send a message to another instance by **name** (or ID) — arrives via channel push |
-| `set_name`       | Give this session a clearer peer name (slugified; suffixed if taken)              |
-| `set_summary`    | Declare your mission to other peers (optional, distinct from observed activity)    |
-| `check_messages` | Fallback: fetch messages when running without the channel flag                     |
+| Tool              | What it does                                                                                             |
+| ----------------- | --------------------------------------------------------------------------------------------------------- |
+| `list_peers`      | Find other Claude Code instances — scoped to `machine`, `directory`, or `repo`                             |
+| `send_message`    | Send a message to another instance by **name** (or ID) — arrives via channel push; optional `reply_to` threads the reply to a previous message |
+| `message_status`  | Check whether a sent message was handed to the target session (`buffered`/`delivered`)                     |
+| `set_name`        | Give this session a clearer peer name (slugified; suffixed if taken)                                       |
+| `set_summary`     | Declare your mission to other peers (optional, distinct from observed activity)                             |
+| `check_messages`  | Fallback: fetch messages when running without the channel flag                                             |
 
 ## How it works
 
@@ -87,16 +88,27 @@ A **broker daemon** runs on `localhost:7899` with a SQLite database. Each Claude
 
 The broker auto-launches when the first session starts. It cleans up dead peers automatically. Everything is localhost-only.
 
+The broker also enforces a **runaway guard**: at most 20 messages per hour between any pair of sessions (override with `CLAUDE_PEERS_PAIR_LIMIT`), so two autonomous sessions cannot ping-pong forever while you're away. Every message gets an id; `message_status` tells the sender whether it was handed to the target ("delivered") — proof of processing is still the reply.
+
 ## Peer identity
 
-Every session has a readable **name** — the address other peers use in `send_message`. The name is resolved in this order:
+Every session has a readable **name** — the address other peers use in `send_message`. Resolution order:
 
 1. **Env override** — `CLAUDE_PEERS_NAME=my-name claude ...` (wins over everything).
-2. **`set_name` tool** — ask a session to rename itself; the name then sticks across MCP-server restarts.
-3. **Auto from activity** — a `UserPromptSubmit` hook feeds each prompt's head + git branch to the broker. The first substantive prompt derives a name (stopwords stripped, first significant tokens), then the name freezes while `last_activity` keeps refreshing.
-4. **Fallback** — `<cwd-basename>-<branch>` until the first prompt arrives.
+2. **`set_name` tool** — the session renames itself the moment you give it a name in conversation ("appelle-toi analyse-msci"); the name sticks across MCP-server restarts and can change when the topic pivots.
+3. **Fallback** — `<cwd-basename>-<branch>` until you name it.
 
-The activity hook lives in the harness that runs the sessions (e.g. `.claude/hooks/peers_activity.py`), POSTing `{claude_pid, prompt_head, branch}` to the broker's `/update-activity` endpoint. It is fail-open and silent — no broker, no git, no problem.
+Names are stable addresses; the **description** is what lives: a `UserPromptSubmit` hook feeds each prompt's head + git branch to the broker, which keeps the **5 most recent substantive prompts** per session (no LLM, no transcript reading — a ~1 ms local POST). `list_peers` shows that digest, so any peer can tell who is working on what right now.
+
+The canonical hook lives in this repo at `hooks/peers_activity.py`. Install it globally so every session feeds the directory:
+
+```bash
+mkdir -p ~/.claude/hooks
+cp ~/claude-peers-mcp/hooks/peers_activity.py ~/.claude/hooks/
+# then register it in ~/.claude/settings.json under hooks.UserPromptSubmit:
+#   { "hooks": [ { "type": "command", "command": "python3 \"$HOME/.claude/hooks/peers_activity.py\"", "timeout": 3 } ] }
+```
+It is fail-open and silent — no broker, no git, no problem.
 
 ## CLI
 
@@ -113,11 +125,12 @@ bun cli.ts kill-broker       # stop the broker
 
 ## Configuration
 
-| Environment variable | Default              | Description                                          |
-| -------------------- | -------------------- | --------------------------------------------------- |
-| `CLAUDE_PEERS_PORT`  | `7899`               | Broker port                                         |
-| `CLAUDE_PEERS_DB`    | `~/.claude-peers.db` | SQLite database path                                |
-| `CLAUDE_PEERS_NAME`  | —                    | Explicit peer name for this session (overrides all) |
+| Environment variable      | Default              | Description                                                       |
+| ------------------------- | -------------------- | ------------------------------------------------------------------ |
+| `CLAUDE_PEERS_PORT`       | `7899`               | Broker port                                                        |
+| `CLAUDE_PEERS_DB`         | `~/.claude-peers.db` | SQLite database path                                               |
+| `CLAUDE_PEERS_NAME`       | —                    | Explicit peer name for this session (overrides all)                |
+| `CLAUDE_PEERS_PAIR_LIMIT` | `20`                 | Max messages per hour between a pair of sessions (runaway guard)  |
 
 ## Requirements
 

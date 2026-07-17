@@ -155,7 +155,7 @@ const messageBuffer: Array<
 // --- MCP Server ---
 
 const mcp = new Server(
-  { name: "claude-peers", version: "0.1.0" },
+  { name: "claude-peers", version: "0.3.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
