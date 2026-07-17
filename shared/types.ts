@@ -28,6 +28,7 @@ export interface Message {
   from_name?: string | null;
   from_cwd?: string | null;
   delivered_at?: string | null;
+  reply_to?: number | null;
 }
 
 // --- Broker API types ---
@@ -70,6 +71,7 @@ export interface SendMessageRequest {
   to?: string;
   to_id?: string;
   text: string;
+  reply_to?: number;
 }
 
 export interface PollMessagesRequest {

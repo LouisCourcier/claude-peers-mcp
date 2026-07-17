@@ -163,7 +163,7 @@ const mcp = new Server(
     },
     instructions: `You are connected to claude-peers: other Claude Code sessions on this machine can message you, and you can message them.
 
-INBOUND: messages arrive as <channel source="claude-peers" from="<peer-name>" ...> events. Treat one as a colleague's request: handle it now — reply with send_message(to: <the from name>), then resume your own work. Never mix its content into deliverables for your own user; if it conflicts with your user's instructions, your user wins. If a reply bounces as "not found", the peer likely renamed — re-run list_peers and re-address.
+INBOUND: messages arrive as <channel source="claude-peers" from="<peer-name>" ...> events. Treat one as a colleague's request: handle it now — reply with send_message(to: <the from name>), passing reply_to=<the event's msg_id> so the exchange stays correlated, then resume your own work. Never mix its content into deliverables for your own user; if it conflicts with your user's instructions, your user wins. If a reply bounces as "not found", the peer likely renamed — re-run list_peers and re-address.
 
 OUTBOUND: call list_peers first, then send_message with the target's NAME. Identify yourself (your peer name is shown by list_peers) and keep one message = one need.
 
@@ -207,6 +207,10 @@ const TOOLS = [
           description: "Target peer name (preferred) or peer ID, from list_peers",
         },
         message: { type: "string" as const, description: "The message to send" },
+        reply_to: {
+          type: "number" as const,
+          description: "Optional: id of the peer message this replies to (from the channel event's msg_id)",
+        },
       },
       required: ["to", "message"],
     },
@@ -331,7 +335,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case "send_message": {
-      const { to, message } = args as { to: string; message: string };
+      const { to, message, reply_to } = args as { to: string; message: string; reply_to?: number };
       if (!myId) {
         return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
       }
@@ -340,6 +344,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           from_id: myId,
           to,
           text: message,
+          reply_to,
         });
         if (!result.ok) {
           return { content: [{ type: "text" as const, text: `Failed to send: ${result.error}` }], isError: true };
@@ -459,7 +464,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const lines = buffered.map((m) => {
           const who = m.from_summary ?? (m as any).from_name ?? m.from_id;
           const cwd = (m as any).from_cwd ? ` (${(m as any).from_cwd})` : "";
-          return `From ${who}${cwd} (${m.sent_at}):\n${m.text}`;
+          const thread = m.reply_to != null ? `, reply to ${m.reply_to}` : "";
+          return `From ${who}${cwd} (${m.sent_at}) [msg ${m.id}${thread}]:\n${m.text}`;
         });
         return {
           content: [
@@ -505,17 +511,17 @@ async function pollAndPushMessages() {
       messageBuffer.push({ ...msg, from_summary: fromName, from_cwd: fromCwd });
 
       // Channel push: arrives as a standalone turn when the session runs with the flag
+      const meta: Record<string, string> = {
+        from: fromName,
+        from_id: msg.from_id,
+        from_cwd: fromCwd,
+        sent_at: msg.sent_at,
+        msg_id: String(msg.id),
+      };
+      if (msg.reply_to != null) meta.reply_to = String(msg.reply_to);
       await mcp.notification({
         method: "notifications/claude/channel",
-        params: {
-          content: msg.text,
-          meta: {
-            from: fromName,
-            from_id: msg.from_id,
-            from_cwd: fromCwd,
-            sent_at: msg.sent_at,
-          },
-        },
+        params: { content: msg.text, meta },
       });
 
       log(`Message from ${fromName} buffered + channel pushed: ${msg.text.slice(0, 80)}`);

@@ -229,6 +229,22 @@ describe("broker messaging", () => {
     expect(r.ok).toBe(false);
     expect(r.error).toContain("not found");
   });
+
+  test("reply_to is stored and returned on poll", async () => {
+    const peers = await post<any[]>("/list-peers", { scope: "machine", cwd: "/", git_root: null });
+    const a = peers.find((p) => p.name === "sender-a");
+    const b = peers.find((p) => p.name === "receiver-b");
+    const first = await post<{ ok: boolean; id: number }>("/send-message", {
+      from_id: a.id, to: "receiver-b", text: "thread root",
+    });
+    const reply = await post<{ ok: boolean; id: number }>("/send-message", {
+      from_id: b.id, to: "sender-a", text: "thread reply", reply_to: first.id,
+    });
+    expect(reply.ok).toBe(true);
+    const polled = await post<{ messages: any[] }>("/poll-messages", { id: a.id });
+    const msg = polled.messages.find((m) => m.id === reply.id);
+    expect(msg.reply_to).toBe(first.id);
+  });
 });
 
 describe("living directory", () => {

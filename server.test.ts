@@ -98,6 +98,7 @@ test(
     expect(msg.content).toBe("field feedback: hint R3 misfires on EAV");
     expect(msg.meta.from).toBe("peer-alpha");
     expect(msg.meta.from_id).toHaveLength(8);
+    expect(Number(msg.meta.msg_id)).toBeGreaterThan(0);
   },
   10000,
 );

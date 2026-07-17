@@ -110,6 +110,7 @@ ensureColumn("peers", "activity_at", "TEXT");
 ensureColumn("messages", "from_name", "TEXT");
 ensureColumn("messages", "from_cwd", "TEXT");
 ensureColumn("messages", "delivered_at", "TEXT");
+ensureColumn("messages", "reply_to", "INTEGER");
 db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_peers_name ON peers(name)");
 
 // Backfill names for rows registered by v1 servers before this migration ran
@@ -354,8 +355,9 @@ function handleSendMessage(body: SendMessageRequest): { ok: boolean; id?: number
     };
   }
   const res = db.run(
-    "INSERT INTO messages (from_id, to_id, text, sent_at, delivered, from_name, from_cwd) VALUES (?, ?, ?, ?, 0, ?, ?)",
-    [body.from_id, resolved.id, body.text, new Date().toISOString(), sender?.name ?? null, sender?.cwd ?? null],
+    "INSERT INTO messages (from_id, to_id, text, sent_at, delivered, from_name, from_cwd, reply_to) VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
+    [body.from_id, resolved.id, body.text, new Date().toISOString(), sender?.name ?? null, sender?.cwd ?? null,
+     body.reply_to ?? null],
   );
   return { ok: true, id: Number(res.lastInsertRowid) };
 }
