@@ -124,3 +124,20 @@ test("check_messages fallback returns sender name", async () => {
   expect(text).toContain("reply for the buffer");
   expect(text).toContain("skill-owner");
 });
+
+test("list_peers renders the recent-activity digest", async () => {
+  await fetch(`http://127.0.0.1:${PORT}/update-activity`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      claude_pid: 900001,
+      prompt_head: "review the tagging eligibility rules",
+      branch: null,
+    }),
+  });
+  const res = await clientA.callTool({ name: "list_peers", arguments: { scope: "machine" } });
+  const text = (res.content as { type: string; text: string }[])[0].text;
+  expect(text).toContain("Recent activity:");
+  expect(text).toContain("review the tagging eligibility rules");
+  expect(text).toMatch(/\[\d+(s|min|h|d) ago\]/);
+});

@@ -96,6 +96,14 @@ function log(msg: string) {
   console.error(`[claude-peers] ${msg}`);
 }
 
+function relativeTime(iso: string): string {
+  const s = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
 async function getGitRoot(cwd: string): Promise<string | null> {
   try {
     const proc = Bun.spawn(["git", "rev-parse", "--show-toplevel"], {
@@ -159,7 +167,7 @@ INBOUND: messages arrive as <channel source="claude-peers" from="<peer-name>" ..
 
 OUTBOUND: call list_peers first, then send_message with the target's NAME. Identify yourself (your peer name is shown by list_peers) and keep one message = one need.
 
-Your peer name is auto-derived from your session's activity. If your user gives you a better identity, call set_name. Optionally call set_summary to declare your mission to other peers.
+Your peer name starts as a "<folder>-<branch>" fallback. The moment your user gives this session a name (or renames it, or your topic clearly pivots), call set_name — names are how peers address you. Optionally call set_summary to declare your mission to other peers.
 
 check_messages is a FALLBACK for sessions running without the channel flag — push is the normal path.
 
@@ -173,7 +181,7 @@ const TOOLS = [
   {
     name: "list_peers",
     description:
-      "List other Claude Code instances running on this machine. Returns their ID, working directory, git repo, and summary.",
+      "List other Claude Code instances running on this machine. Returns name, ID, mission, branch, recent-activity digest, and working directory.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -276,7 +284,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           const parts = [`Name: ${p.name ?? "(unnamed)"}`, `ID: ${p.id}`];
           if (p.summary) parts.push(`Mission: ${p.summary}`);
           if (p.branch) parts.push(`Branch: ${p.branch}`);
-          if (p.last_activity) parts.push(`Last activity: ${p.last_activity} (${p.activity_at ?? "?"})`);
+          if (p.recent_activity?.length) {
+            parts.push(
+              "Recent activity:\n    " +
+                p.recent_activity
+                  .map((a) => `- [${relativeTime(a.at)}] ${a.prompt_head}`)
+                  .join("\n    "),
+            );
+          }
           parts.push(`CWD: ${p.cwd}`);
           parts.push(`Last seen: ${p.last_seen}`);
           return parts.join("\n  ");
