@@ -28,6 +28,8 @@ const PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
 const DB_PATH = process.env.CLAUDE_PEERS_DB ?? `${process.env.HOME}/.claude-peers.db`;
 const ACTIVITY_RING_SIZE = 5;
 const ACTIVITY_MIN_PROMPT_LEN = 15;
+const PAIR_LIMIT = parseInt(process.env.CLAUDE_PEERS_PAIR_LIMIT ?? "20", 10);
+const PAIR_WINDOW_MS = 3600_000;
 
 // --- Database setup ---
 
@@ -336,6 +338,20 @@ function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: str
   const sender = db.query("SELECT name, cwd FROM peers WHERE id = ?").get(body.from_id) as
     | { name: string | null; cwd: string }
     | null;
+
+  const windowStart = new Date(Date.now() - PAIR_WINDOW_MS).toISOString();
+  const { n } = db
+    .query(
+      `SELECT COUNT(*) AS n FROM messages
+       WHERE sent_at > ? AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))`,
+    )
+    .get(windowStart, body.from_id, resolved.id, resolved.id, body.from_id) as { n: number };
+  if (n >= PAIR_LIMIT) {
+    return {
+      ok: false,
+      error: `Rate limit: ${n} messages in the last hour between "${sender?.name ?? body.from_id}" and "${target}" — runaway guard. Stop this exchange for now; if it is intentional, the user can raise CLAUDE_PEERS_PAIR_LIMIT and restart the broker.`,
+    };
+  }
   db.run(
     "INSERT INTO messages (from_id, to_id, text, sent_at, delivered, from_name, from_cwd) VALUES (?, ?, ?, ?, 0, ?, ?)",
     [body.from_id, resolved.id, body.text, new Date().toISOString(), sender?.name ?? null, sender?.cwd ?? null],
